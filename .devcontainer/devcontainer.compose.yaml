@@ -1,0 +1,10 @@
+# filename: .devcontainer/devcontainer.compose.yaml
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu-24.04
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/workspace:cached
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - internal

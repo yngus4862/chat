@@ -1,0 +1,7 @@
+{
+  "realm": "chat",
+  "enabled": true,
+  "displayName": "Chat Realm (MVP)",
+  "users": [],
+  "clients": []
+}

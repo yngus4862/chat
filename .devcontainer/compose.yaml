@@ -1,0 +1,317 @@
+# filename: .devcontainer/compose.yaml
+name: chat-stack
+
+services:
+  # =========================
+  # Reverse Proxy (only 443)
+  # =========================
+  nginx:
+    image: nginx:1.29.5-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"
+    networks:
+      - public
+      - internal
+    environment:
+      DOMAIN: ${DOMAIN}
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE}
+
+      # Host에서 실행 중인 앱(.NET)을 프록시 (기본: host.docker.internal)
+      CHAT_API_UPSTREAM: ${CHAT_API_UPSTREAM}
+      REALTIME_UPSTREAM: ${REALTIME_UPSTREAM}
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ${TLS_CERT_PATH}:/etc/nginx/certs/tls.crt:ro
+      - ${TLS_KEY_PATH}:/etc/nginx/certs/tls.key:ro
+    extra_hosts:
+      # Docker Desktop에서 host 접근용. (Docker Engine 20.10+)
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/nginx_status >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # =========================
+  # Core: Postgres / Redis
+  # =========================
+  postgres:
+    image: postgres:18.2-alpine
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      TZ: Asia/Seoul
+      PGTZ: Asia/Seoul
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      KEYCLOAK_DB: ${KEYCLOAK_DB}
+      KEYCLOAK_DB_USER: ${KEYCLOAK_DB_USER}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+    command: ["postgres", "-c", "timezone=Asia/Seoul"]
+    volumes:
+      - ${DATA_ROOT}/postgres:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  redis:
+    image: redis:8.6.0-alpine
+    restart: unless-stopped
+    networks: [internal]
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD} ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  # =========================
+  # Keycloak (behind /auth)
+  # =========================
+  keycloak:
+    # [변경] build 제거 → image 사용
+    image: keycloak/keycloak:26.5.0-0
+
+    command:
+      - start
+      - --import-realm
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: true
+
+    environment:
+      KC_DB: postgres
+      KC_DB_PASSWORD: CHANGE_ME_STRONG_PASSWORD
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_HEALTH_ENABLED: "true"
+      KC_HOSTNAME: chat.company.local
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_LOG_LEVEL: INFO
+      KC_METRICS_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: CHANGE_ME_STRONG_PASSWORD
+      TZ: Asia/Seoul
+
+    # [변경] curl 기반 healthcheck 제거 → bash + /dev/tcp 방식
+    # Keycloak 문서에서 안내하는 HEALTHCHECK 예시 기반 :contentReference[oaicite:2]{index=2}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          bash -lc "{ printf 'HEAD /health/ready HTTP/1.0\r\n\r\n' >&0; grep 'HTTP/1.0 200'; } 0<>/dev/tcp/localhost/9000"
+      timeout: 5s
+      interval: 10s
+      retries: 30
+      start_period: 40s
+
+    networks:
+      internal: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ./keycloak/realm
+        target: /opt/keycloak/data/import
+        read_only: true
+        bind: {}
+
+  # =========================
+  # MinIO (single-node MVP)
+  # =========================
+  minio:
+    # 최신 이미지에서 curl/wget이 빠져 healthcheck가 깨지는 이슈가 있어,
+    # MVP에서는 (curl 포함) 구버전 tag로 "고정" 권고.
+    # - curl/wget 제거 이슈: :contentReference[oaicite:1]{index=1}
+    # - 해결로 구버전 pinning 언급: :contentReference[oaicite:2]{index=2}
+    image: minio/minio:${MINIO_VERSION}
+    restart: unless-stopped
+    networks: [internal]
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      TZ: Asia/Seoul
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ${DATA_ROOT}/minio:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    profiles: ["workers"]
+    restart: "no"
+    networks: [internal]
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET_ATTACHMENTS: ${MINIO_BUCKET_ATTACHMENTS}
+    volumes:
+      - ./scripts/init-minio.sh:/init-minio.sh:ro
+    entrypoint: ["/bin/sh", "-c", "sh /init-minio.sh"]
+
+  # =========================
+  # Optional Search (Elastic/Kibana)
+  # =========================
+  elasticsearch:
+    image: elasticsearch:${ELASTIC_VERSION}
+    profiles: ["search"]
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      TZ: Asia/Seoul
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ELASTIC_JAVA_OPTS}
+    volumes:
+      - ${DATA_ROOT}/elasticsearch:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  kibana:
+    image: kibana:${ELASTIC_VERSION}
+    profiles: ["search"]
+    restart: unless-stopped
+    networks: [internal]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      SERVER_BASEPATH: /kibana
+      SERVER_REWRITEBASEPATH: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5601/api/status >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # =========================
+  # Optional Observability
+  # =========================
+  prometheus:
+    image: prom/prometheus:v3.9.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks: [internal]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yaml"
+      - "--storage.tsdb.retention.time=${PROMETHEUS_RETENTION}"
+      - "--web.external-url=/prometheus"
+      - "--web.route-prefix=/prometheus"
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ${DATA_ROOT}/prometheus:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:main-ubuntu
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks: [internal]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Seoul
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_ROOT_URL: https://${DOMAIN}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - ${DATA_ROOT}/grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.5.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks: [internal]
+    command: ["-nginx.scrape-uri=http://nginx:8080/nginx_status"]
+    depends_on:
+      nginx:
+        condition: service_healthy
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.19.0
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.81.0-alpine
+    profiles: ["observability"]
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # =========================
+  # Optional Workers (ClamAV)
+  # =========================
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["workers"]
+    restart: unless-stopped
+    networks: [internal]
+    volumes:
+      - ${DATA_ROOT}/clamav:/var/lib/clamav
+
+networks:
+  public: {}
+  internal: {}

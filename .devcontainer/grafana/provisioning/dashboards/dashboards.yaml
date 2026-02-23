@@ -1,0 +1,8 @@
+# filename: .devcontainer/grafana/provisioning/dashboards/dashboards.yaml
+apiVersion: 1
+providers:
+  - name: "default"
+    folder: "Compose"
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

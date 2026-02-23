@@ -1,0 +1,11 @@
+// filename: .devcontainer/devcontainer.json
+{
+  "name": "chat-infra-devcontainer",
+  "dockerComposeFile": ["compose.yaml", "devcontainer.compose.yaml"],
+  "service": "dev",
+  "workspaceFolder": "/workspaces/workspace",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  }
+}
