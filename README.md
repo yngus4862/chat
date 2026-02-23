@@ -1,22 +1,32 @@
-# 사내 메신저 인프라 스택 (앱은 Host 실행)
+# Go Chat Server Skeleton (Dev Container)
 
-## 핵심
-- 외부 노출: **443만**
-- nginx(TLS 종료) -> Keycloak(/auth), Host 앱(/api, /realtime)
-- 내부 서비스(Postgres/Redis/MinIO/Elastic/Observability)는 Docker 네트워크로만
+## Why this layout?
+Go는 “딱 하나의 표준 레이아웃”을 강제하진 않지만, 공식 문서(go.dev)가 서버 프로젝트에 대해
+`go.mod`는 루트, 실행 바이너리는 `cmd/`, 서버 로직은 `internal/`에 두는 구성을 권장합니다.  
+(내부 패키지는 외부 모듈에서 import가 금지되어 리팩터링 자유도가 큽니다.)
 
-## 1) 준비
-1) env 생성
-- `.devcontainer/.env.example` -> `.devcontainer/.env` 복사 후 비밀번호 변경
+## Tree
+workspace/
+  cmd/chatd/main.go
+  internal/{config,model,store,httpapi,realtime}
+  migrations/
 
-2) 데이터 디렉터리
-- 권장: `workspace/.data/*`
+## Endpoints
+REST: http://localhost:8080
+- GET /healthz
+- GET /readyz
+- POST /v1/rooms
+- GET /v1/rooms
+- POST /v1/rooms/{roomId}/messages
+- GET /v1/rooms/{roomId}/messages?limit=50
 
-3) TLS
-- 개발용(self-signed) 생성(선택)
-  - WSL/Linux: `bash .devcontainer/scripts/generate-selfsigned.sh`
+WebSocket: ws://localhost:8081/ws?roomId=1
 
-## 2) 실행
-루트에서 실행(권장):
-```bash
-docker compose -f .devcontainer/compose.yaml --env-file .devcontainer/.env up -d
+## Run
+- VS Code: Reopen in Container
+- CLI: cd workspace/.devcontainer && docker compose up --build
+
+## Note (Conflict)
+PROJECT_STATE.md의 확정 스택은 .NET/SignalR 입니다.
+본 Go 스켈레톤은 “요청에 의해” 생성된 대안이며,
+현재는 구조/개발환경 재현성 확인용으로만 유지하는 것을 권장합니다.

@@ -1,10 +1,128 @@
-# filename: .devcontainer/devcontainer.compose.yaml
 services:
-  dev:
-    image: mcr.microsoft.com/devcontainers/base:ubuntu-24.04
-    command: sleep infinity
+  # The application service contains the Go runtime, live reload tooling and
+  # debugger. It watches the project directory and rebuilds the server when
+  # files change. Ports 8080 (REST) and 8081 (WebSocket) are exposed to the
+  # host. The non‑root user `vscode` is defined in the Dockerfile to avoid
+  # permission problems when mounting code from the host.
+  app:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    command: ["air", "--config", "/workspace/.air.toml"]
     volumes:
-      - ..:/workspaces/workspace:cached
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - internal
+      - ..:/workspace:cached
+      - gocache:/go/pkg/mod
+      - air-tmp:/workspace/tmp
+    environment:
+      APP_PORT: "8080"
+      APP_WS_PORT: "8081"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: appsecret
+      POSTGRES_DB: chatapp
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+      MINIO_BUCKET: chat-files
+      MINIO_REGION: us-east-1
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    user: vscode
+
+  # PostgreSQL database service. Data is persisted in the pgdata volume. The
+  # healthcheck uses pg_isready to wait for the database to accept
+  # connections.
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_PASSWORD: appsecret
+      POSTGRES_DB: chatapp
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching, pubsub and simple state. Data is persisted in the
+  # redisdata volume. A simple ping healthcheck ensures the service is ready.
+  redis:
+    image: redis:8.6-alpine
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO provides S3‑compatible object storage for file uploads. The
+  # console is exposed on port 9090. Use the minio client (mc) for
+  # advanced healthchecks or simply rely on the built in liveness test.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9090"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Keycloak is optional and enabled via the 'auth' profile. Start it with
+  # `docker compose --profile auth up` when you need identity and single
+  # sign‑on support. The admin user and password are defined here; for
+  # production they should come from an external secrets manager.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.5
+    command: ["start-dev", "--health-enabled=true", "--http-port=8082"]
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    volumes:
+      - keycloakdata:/opt/keycloak/data
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    profiles:
+      - auth
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  gocache:
+  air-tmp:
+  keycloakdata:

@@ -1,11 +1,19 @@
-// filename: .devcontainer/devcontainer.json
 {
-  "name": "chat-infra-devcontainer",
-  "dockerComposeFile": ["compose.yaml", "devcontainer.compose.yaml"],
-  "service": "dev",
+  "name": "chat-server-go-dev",
+  "dockerComposeFile": "devcontainer.compose.yaml",
+  "service": "app",
   "workspaceFolder": "/workspaces/workspace",
-  "shutdownAction": "stopCompose",
-  "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  "runServices": ["app", "postgres", "redis", "minio"],
+  "forwardPorts": [8080, 8081, 5432, 6379, 9000],
+  "remoteUser": "vscode",
+  "postCreateCommand": "go mod download",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.autoUpdate": true
+      },
+      "extensions": ["golang.go"]
+    }
   }
 }
