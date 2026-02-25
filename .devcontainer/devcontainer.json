@@ -4,6 +4,7 @@
   "service": "app",
   "workspaceFolder": "/workspace",
   "runServices": ["app", "postgres", "redis", "minio"],
+  "forwardPorts": [8080, 8081],
   // "forwardPorts": [8080, 8081, 5432, 6379, 9000],
   "remoteUser": "vscode",
   "postCreateCommand": "git config --global --add safe.directory /workspace && go mod download",
@@ -13,7 +14,10 @@
         "go.useLanguageServer": true,
         "go.toolsManagement.autoUpdate": true
       },
-      "extensions": ["golang.go"]
+      "extensions": [
+        "golang.go",
+        "ms-vscode.makefile-tools"
+    ]
     }
   }
 }
