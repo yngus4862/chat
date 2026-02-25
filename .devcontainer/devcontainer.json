@@ -2,11 +2,11 @@
   "name": "chat-server-go-dev",
   "dockerComposeFile": "devcontainer.compose.yaml",
   "service": "app",
-  "workspaceFolder": "/workspaces/workspace",
+  "workspaceFolder": "/workspace",
   "runServices": ["app", "postgres", "redis", "minio"],
-  "forwardPorts": [8080, 8081, 5432, 6379, 9000],
+  // "forwardPorts": [8080, 8081, 5432, 6379, 9000],
   "remoteUser": "vscode",
-  "postCreateCommand": "go mod download",
+  "postCreateCommand": "git config --global --add safe.directory /workspace && go mod download",
   "customizations": {
     "vscode": {
       "settings": {
