@@ -3,7 +3,7 @@
 > **프로젝트:** 사내 메신저(카카오톡 유사) + 서버 구축 (온프레미스)  
 > **대상 클라이언트:** Windows(C#) / Android(Java) / iOS(Swift)  
 > **서버 배포:** Windows Docker 환경에서 Ubuntu 24.04 컨테이너로 운영  
-> **최종 업데이트:** 2026-02-25 (Asia/Seoul) — Go 전환 확정 + DevContainer 기동 안정화 + 스모크 테스트 추가
+> **최종 업데이트:** 2026-02-26 (Asia/Seoul) — 서비스 제어(콘솔/관리 API) 추가 계획 반영
 
 ---
 
@@ -11,7 +11,7 @@
 
 - 사용자 규모 20명(DAU/동접 20), 메시지 500건/일, 첨부 1GB/일(최대 300MB) 기준으로 설계 진행 중
 - 서버는 **Windows Docker** 위에서 **Ubuntu 24.04 컨테이너**로 구성(Compose 기반 운영 전제)
-- 개발환경은 **workspace/.devcontainer/** 아래에 인프라(Compose) 설정을 분리해 관리하며, **앱도 DevContainer(app)에서 실행(air 핫리로드)**
+- 개발환경은 **workspace/.devcontainer/** 아래에 인프라(Compose) 설정을 분리해 관리하며, 앱도 DevContainer(app)에서 실행(air 핫리로드)
 - Keycloak/MinIO 헬스체크 및 이미지 Pull(사내망 HTTPS Proxy) 이슈를 해결하여 인프라 컨테이너 pull·up을 확인
 - 서버(REST/Realtime) 구현 언어는 **Go** 중심으로 진행(REST: Gin, Realtime: WebSocket)
 - 데이터는 **PostgreSQL**, 캐시/이벤트는 **Redis**, 검색은 **Elastic**, 파일은 **MinIO(S3 호환)** 로 분리
@@ -35,7 +35,7 @@
   ┌─────────────────┼───────────────────────┐
   v                 v                       v
 [Chat API]     [Realtime Gateway]     [Notification Svc]
-(Go REST)       (Go WS Hub)            (Push + Badge)
+(.NET REST)     (SignalR Hub)          (Push + Badge)
   |                 |                       |
   ├───────┬─────────┘                       |
   v       v                                 v
@@ -53,7 +53,7 @@
 ## 3) 기술 스택(권고안) 및 근거
 
 ### 권고 스택(A)
-- **Backend:** Go (REST + WebSocket)
+- **Backend:** ASP.NET Core + SignalR (WebSocket)
 - **DB:** PostgreSQL
 - **Cache/Event:** Redis (초기 pubsub + 캐시)
 - **Search:** Elasticsearch
@@ -61,7 +61,7 @@
 - **Auth/SSO:** Keycloak (OIDC)
 - **Observability:** Prometheus + Grafana + Elastic(로그)
 
-**선정 이유(요약):** 동시성/실시간 처리 적합 + 단일 바이너리 배포 용이 + 컨테이너/온프레미스 운영 단순(규모 대비 과잉 설계 방지)
+**선정 이유(요약):** Windows/C# 친화 + 실시간 구현 난이도 낮음 + 운영/확장 로드맵이 단순(규모 대비 과잉 설계 방지)
 
 ---
 
@@ -92,6 +92,14 @@
 - iOS: APNs
 - Windows: MVP에서는 “오프라인 푸시” 제외(온라인 실시간 알림 + 토스트 중심). 필요 시 WNS 검토
 
+### 4-6. 서비스 제어(운영 편의)
+
+- 서버 프로세스는 “서비스처럼” 동작해야 하며, **종료/재시작/상태조회**를 제공한다.
+- 제어 인터페이스는 2종을 제공한다.
+  - (1) **콘솔 명령(stdin)**: `status | stop | restart | help`
+  - (2) **관리 API(HTTP)**: `GET /admin/status`, `POST /admin/stop`, `POST /admin/restart`
+- 관리 API는 기본적으로 **토큰 기반 인증(Bearer Token)** 을 필수로 하여 무단 종료/재시작을 방지한다.
+
 ---
 
 ## 5) 데이터 모델(요약)
@@ -121,16 +129,10 @@
 - MinIO: 이미지 레퍼런스 오타(`::`) 수정, 버킷 생성 init job(옵션 profile) 구성
 - 사내망에서 Docker 이미지 pull 실패(HTTPS proxy 미설정) → Docker Desktop **HTTPS Proxy 설정**으로 해결
 
-- DevContainer 안정화(Windows+WSL2)
-  - Go toolchain: `go not found` 재발 방지를 위해 GOPATH/PATH 명시 및 tool 설치를 vscode 유저로 수행
-  - air: 모듈 경로 변경 대응(`github.com/cosmtrek/air` → `github.com/air-verse/air`) 반영
-  - Windows 포트 정책: Redis(6379) 등 인프라 포트는 기본 publish를 피하고 `expose` 중심으로 구성(필요 시 localhost 바인딩 + 대체 포트 사용)
-  - Git: Windows bind mount에서 발생하는 `dubious ownership` 이슈를 위해 `safe.directory` 예외 처리(권장)
-  - VS Code Server: `/home/vscode/.cache/Microsoft` 생성 EACCES 가능성 대비(권장)
-
 ### 6-3. 다음 단계(실행 필요)
 - Nginx 라우팅 최종 검증: `/auth`(Keycloak) + `/api` + `/realtime`(WebSocket) (앱 포트/경로 고정 후)
-- DB 마이그레이션 파이프라인(자동 적용) 구축(**golang-migrate** 기준으로 고정)
+- DB 마이그레이션 파이프라인(자동 적용) 구축(**golang-migrate** 등 Go 생태계 도구로 고정)
+- 서비스 제어 기능 구현 및 문서화(콘솔/관리 API): 종료/재시작/상태조회 + 보안 토큰
 - Keycloak Realm/Client/Role 초기화 자동화(JSON 확정 및 import 흐름 정리)
 - MinIO presigned URL 흐름 + CORS/정책 점검(도메인 기준)
 - Elastic 인덱스 템플릿/인덱서(outbox) 구성 + Kibana profile 운영(리소스 확인)
@@ -145,20 +147,16 @@
 - [x] 2. `.env.template` 및 시크릿 정책 정의(DPAPI/Secrets) → **.env.example** 제공 + 로컬 `.env` 운영
 - [ ] 3. 각 서비스 Dockerfile(DEV/PROD) 작성  
   - 현재는 공식 이미지 사용이 우선이며, 커스텀 빌드는 “필요 시”로 보류(특히 Keycloak)
-- [x] 3-1. DevContainer 앱 이미지 빌드 안정화(오류 재발 방지)
-  - GOPATH/PATH 명시, air 모듈 경로 변경 대응(air-verse), app 기동 안정화
-- [x] 3-2. Windows 호스트 포트 publish 정책 정리
-  - 인프라 포트는 기본 `expose`로만 사용(필요 시 localhost 바인딩 + 대체 포트)
 - [x] 4. `docker-compose.yml` 스켈레톤 생성(nginx/postgres/redis/minio/keycloak + profiles: elastic/prom/grafana/workers)
 - [x] 5. Nginx 설정(WebSocket/업로드 제한/timeout/TLS) 초안 반영
-- [ ] 6. DB 마이그레이션 job(service) 추가(도구 선택 후 반영)
+- [ ] 6. DB 마이그레이션 job(service) 추가(**golang-migrate** 기준)
+- [ ] 6-1. 서비스 제어 기능(콘솔/관리 API) 추가 + 운영 문서화(토큰/바인딩 정책 포함)
 - [ ] 7. Keycloak realm import/export 자동화(Realm/Client/Role JSON 확정 후 고정)
 - [x] 8. MinIO init job(버킷/정책) 추가(옵션 profile)
 - [ ] 9. Elastic 템플릿 + 인덱서 워커 연결(outbox 구현 후)
 - [x] 10. 관측성(메트릭/로그) 기본 배선(Prometheus/Grafana 스켈레톤)
 - [ ] 11. 백업/복구(runbook + 스크립트) 추가
-- [x] 12. 스모크 테스트 추가(REST + WS + DB 연동 자동 검증)
-- [ ] 12-1. 부하 테스트(k6 등) 스크립트 추가
+- [ ] 12. 스모크 테스트/부하 테스트 스크립트 추가
 - [ ] 13. CI/CD(Jenkins) 골격 구성
 
 ---
