@@ -2,7 +2,7 @@
 FROM golang:1.26-trixie
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git curl ca-certificates bash \
+    && apt-get install -y --no-install-recommends git curl ca-certificates bash net-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Git "dubious ownership" 방지: 컨테이너에서 /workspace는 안전한 디렉터리로 취급

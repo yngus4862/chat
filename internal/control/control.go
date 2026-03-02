@@ -45,7 +45,6 @@ func New() (*Emitter, Signals) {
 	return e, Signals{Stop: e.stop, Restart: e.restart}
 }
 
-// 중복 요청은 “대기 중 1개”만 유지(버퍼 1). 처리되면 다시 받을 수 있음.
 func (e *Emitter) RequestStop() {
 	select {
 	case e.stop <- struct{}{}:
@@ -75,7 +74,6 @@ func BuildStatus(startedAt time.Time, appHTTP, appWS, admin string) Status {
 	}
 }
 
-// Linux 컨테이너 기준: 현재 프로세스를 동일 바이너리로 교체(re-exec)
 func ReexecSelf() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -163,7 +161,6 @@ func StartAdminHTTP(ctx context.Context, addr string, token string, e *Emitter, 
 }
 
 func StartConsole(ctx context.Context, in io.Reader, out io.Writer, e *Emitter, statusFn func() Status) {
-	// air 사용 시 stdin이 air에 먹힐 수 있으니 “옵션”으로 둠.
 	go func() {
 		sc := bufio.NewScanner(in)
 		fmt.Fprintln(out, "control console: type 'help'")

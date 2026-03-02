@@ -9,68 +9,86 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/yngus4862/chat/internal/api"
+	"github.com/yngus4862/chat/internal/config"
 	"github.com/yngus4862/chat/internal/control"
+	"github.com/yngus4862/chat/internal/db"
+	"github.com/yngus4862/chat/internal/health"
+	"github.com/yngus4862/chat/internal/store"
+	"github.com/yngus4862/chat/internal/ws"
 )
 
 func main() {
-	appHTTP := env("APP_HTTP_ADDR", "0.0.0.0:8080")
-	appWS := env("APP_WS_ADDR", "0.0.0.0:8081")
-
-	adminAddr := env("ADMIN_HTTP_ADDR", "127.0.0.1:9099")
-	adminToken := env("ADMIN_TOKEN", "")
-
+	cfg := config.Load()
 	startedAt := time.Now()
 
-	// ✅ 핵심 변경점 1:
-	// 기존의 router.Run(...) 같은 블로킹 실행 대신,
-	// http.Server로 감싸서 Shutdown(ctx)를 호출할 수 있게 만든다.
-	restSrv := &http.Server{Addr: appHTTP, Handler: buildRestHandler()}
-	wsSrv := &http.Server{Addr: appWS, Handler: buildWSHandler()}
-
-	// control event bus
-	emitter, sigs := control.New()
-
-	// 앱 전체 컨텍스트(관리 API 종료에도 사용)
-	ctx, cancel := context.WithCancel(context.Background())
+	rootCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	statusFn := func() control.Status {
-		return control.BuildStatus(startedAt, appHTTP, appWS, adminAddr)
+	// DB
+	dbConn, err := db.Connect(rootCtx, cfg.PostgresURL())
+	if err != nil {
+		log.Fatal("db connect failed: ", err)
+	}
+	defer dbConn.Close()
+
+	st := store.New(dbConn.Pool)
+
+	// Redis pubsub for WS (optional but recommended)
+	var ps *ws.RedisPubSub
+	ps = ws.NewRedisPubSub(cfg.RedisAddr())
+	defer func() { _ = ps.Close() }()
+
+	hub := ws.NewHub(st, ps)
+
+	// Readiness
+	readyFn := func() health.Result {
+		return health.Ready(rootCtx, st, ps)
 	}
 
-	// ✅ 핵심 변경점 2: 콘솔 제어(옵션)
-	control.StartConsole(ctx, os.Stdin, os.Stdout, emitter, statusFn)
+	h := &api.Handlers{Store: st, Hub: hub}
+	router := api.NewRouter(api.Deps{Handlers: h, ReadyFn: readyFn})
 
-	// ✅ 핵심 변경점 3: 관리 API(토큰 없으면 비활성)
+	restSrv := &http.Server{Addr: cfg.AppHTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
+	wsMux := http.NewServeMux()
+	wsMux.HandleFunc("/ws", hub.ServeWS)
+	wsSrv := &http.Server{Addr: cfg.AppWSAddr, Handler: wsMux, ReadHeaderTimeout: 5 * time.Second}
+
+	// Control
+	emitter, sigs := control.New()
+	statusFn := func() control.Status {
+		return control.BuildStatus(startedAt, cfg.AppHTTPAddr, cfg.AppWSAddr, cfg.AdminHTTPAddr)
+	}
+	control.StartConsole(rootCtx, os.Stdin, os.Stdout, emitter, statusFn)
+
 	go func() {
-		if adminToken == "" {
+		if cfg.AdminToken == "" {
 			log.Println("[admin] ADMIN_TOKEN empty -> admin server disabled")
 			return
 		}
-		if err := control.StartAdminHTTP(ctx, adminAddr, adminToken, emitter, statusFn); err != nil {
+		if err := control.StartAdminHTTP(rootCtx, cfg.AdminHTTPAddr, cfg.AdminToken, emitter, statusFn); err != nil {
 			log.Println("[admin] error:", err)
 			emitter.RequestStop()
 		}
 	}()
 
-	// ✅ 핵심 변경점 4: 서버는 goroutine으로 실행
+	// Start servers
 	go func() {
-		log.Println("[app] REST listening:", appHTTP)
+		log.Println("[app] REST listening:", cfg.AppHTTPAddr)
 		if err := restSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Println("[app] REST error:", err)
 			emitter.RequestStop()
 		}
 	}()
-
 	go func() {
-		log.Println("[app] WS listening:", appWS)
+		log.Println("[app] WS listening:", cfg.AppWSAddr)
 		if err := wsSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Println("[app] WS error:", err)
 			emitter.RequestStop()
 		}
 	}()
 
-	// OS signal (SIGINT/SIGTERM)
+	// OS signals
 	osSig := make(chan os.Signal, 2)
 	signal.Notify(osSig, os.Interrupt, syscall.SIGTERM)
 
@@ -80,16 +98,13 @@ func main() {
 			log.Println("[ctrl] signal -> stop")
 			gracefulStop(restSrv, wsSrv)
 			return
-
 		case <-sigs.Stop:
 			log.Println("[ctrl] stop requested")
 			gracefulStop(restSrv, wsSrv)
 			return
-
 		case <-sigs.Restart:
 			log.Println("[ctrl] restart requested")
 			gracefulStop(restSrv, wsSrv)
-			// ✅ 재시작 방식: 현재 프로세스를 동일 바이너리로 교체(re-exec)
 			if err := control.ReexecSelf(); err != nil {
 				log.Println("[ctrl] reexec failed:", err)
 				return
@@ -104,15 +119,3 @@ func gracefulStop(restSrv, wsSrv *http.Server) {
 	_ = wsSrv.Shutdown(ctx)
 	_ = restSrv.Shutdown(ctx)
 }
-
-func env(k, def string) string {
-	v := os.Getenv(k)
-	if v == "" {
-		return def
-	}
-	return v
-}
-
-// TODO: 여기만 “당신이 이미 만든 라우터/핸들러”로 교체
-func buildRestHandler() http.Handler { return http.NewServeMux() }
-func buildWSHandler() http.Handler   { return http.NewServeMux() }

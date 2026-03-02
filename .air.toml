@@ -2,11 +2,12 @@ root = "."
 tmp_dir = "tmp"
 
 [build]
-  cmd = "go build -o ./tmp/app ./cmd/chatd"
-  bin = "tmp/app"
-  full_bin = true
-  include_ext = ["go", "tpl", "html"]
-  exclude_dir = ["tmp", "vendor"]
+  cmd = "go build -o ./tmp/chatd ./cmd/chatd"
+  bin = "tmp/chatd"
+  full_bin = ""
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "vendor", ".git"]
+  delay = 200
 
 [log]
   time = true
